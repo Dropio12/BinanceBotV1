@@ -18,7 +18,7 @@ slowALMA = binance_client.sma(symbol=symbol, timeframe=timeframe, length=lengthS
 isUpTrend = fastALMA > slowALMA
 isDownTrend = fastALMA < slowALMA
 
-# Kokoabe rsistratV2
+# Kokoabe rsistratV21
 rsiLength = 50
 fako = binance_client.fetch_ticker(symbol)['close'] - binance_client.fetch_ticker(symbol)['close'][-rsiLength]
 isPositiveMomentum = fako > 0
