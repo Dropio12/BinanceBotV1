@@ -1,0 +1,429 @@
+//@version=5
+strategy("Combined Strategy", overlay=true, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500, max_bars_back = 5000, process_orders_on_close = true)
+//7 65 45 13
+//45 65 45 13
+// ALMA Cross
+lengthFast = 20
+lengthSlow = 50
+src = close
+fastALMA = ta.alma(src, lengthFast, offset=0.85, sigma=6)
+slowALMA = ta.alma(src, lengthSlow, offset=0.85, sigma=6)
+isUpTrend = ta.crossover(fastALMA, slowALMA)
+isDownTrend = ta.crossunder(fastALMA, slowALMA)
+
+// Kokoabe rsistratV2
+rsiLength = 50
+fako = close - close[rsiLength]
+isPositiveMomentum = fako > 0
+
+// Alpha Trend Supertrend
+lengthSupertrend = 10
+multiplierSupertrend = 3.0
+hpf = ta.wma(high + low + close, 3) / 3
+atr = ta.atr(10)
+upperBand = hpf + multiplierSupertrend * atr
+lowerBand = hpf - multiplierSupertrend * atr
+isAboveSupertrend = close > upperBand
+isBelowSupertrend = close < lowerBand
+
+// Combine the conditions
+isBuySignal = isUpTrend and isPositiveMomentum 
+isSellSignal = (close < ta.sma(close, 165) and fako < -0.0163)
+
+
+// Plotting
+plotshape(isBuySignal, "Buy Signal", shape.triangleup, location.belowbar, color.green, 0, 'b',color.white,true)
+plotshape(isSellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.red, 0, 's',color.white,true)
+plot(isUpTrend ? high + math.abs(high-low)/2 : low - math.abs(high-low)/15, 
+     color = isUpTrend ? color.green : color.red, 
+     style = plot.style_cross)
+plot(isPositiveMomentum ? high + 2*math.abs(high-low)/2 : low - 2*math.abs(high-low)/2,
+     color = color.rgb(51, 243, 33),
+     style = plot.style_cross)
+plot(upperBand, title="Boiling Band Up", color = color.blue)
+plot(lowerBand, title="Boiling Band Down", color = color.blue)
+plot(slowALMA, title="Slow Alma",color = color.rgb(203, 255, 82))
+plot(fastALMA, title="Fast Alma", color = color.rgb(203, 255, 82))
+// plot(fako - math.abs(high-low)/10, color = color.rgb(255, 82, 183))
+//New strat addition
+// Input settings
+ccimomCross = input.string('CCI', 'Entry Signal Source', options=['CCI', 'Momentum'], tooltip='CCI or Momentum will be the final source of the Entry signal if selected.')
+ccimomLength = input.int(10, minval=1, title='CCI/Momentum Length')
+useDivergence = input.bool(true, title='Find Regular Bullish/Bearish Divergence', tooltip='If checked, it will only consider an overbought or oversold condition that has a regular bullish or bearish divergence formed inside that level.')
+rsiOverbought = input.int(65, minval=1, title='RSI Overbought Level', tooltip='Adjusting the level to extremely high may filter out some signals especially when the option to find divergence is checked.')
+rsiOversold = input.int(35, minval=1, title='RSI Oversold Level', tooltip='Adjusting this level extremely low may filter out some signals especially when the option to find divergence is checked.')
+rsiLength2 = input.int(14, minval=1, title='RSI Length')
+plotMeanReversion = input.bool(false, 'Plot Mean Reversion Bands on the chart', tooltip='This function doesn\'t affect the entry of signal but it suggests buying when the price is at the lower band, and then sell it on the next bounce at the higher bands.')
+emaPeriod = input(200, title='Lookback Period (EMA)')
+bandMultiplier = input.float(1.8, title='Outer Bands Multiplier', tooltip='Multiplier for both upper and lower bands')
+
+
+// CCI and Momentum calculation
+momLength = ccimomCross == 'Momentum' ? ccimomLength : 10
+mom = close - close[momLength]
+cci = ta.cci(close, ccimomLength)
+ccimomCrossUp = ccimomCross == 'Momentum' ? ta.cross(mom, 0) : ta.cross(cci, 0)
+ccimomCrossDown = ccimomCross == 'Momentum' ? ta.cross(0, mom) : ta.cross(0, cci)
+
+// RSI calculation
+up = ta.rma(math.max(ta.change(src), 0), rsiLength2)
+down = ta.rma(-math.min(ta.change(src), 0), rsiLength2)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+oversoldAgo = rsi[0] <= rsiOversold or rsi[1] <= rsiOversold or rsi[2] <= rsiOversold or rsi[3] <= rsiOversold
+overboughtAgo = rsi[0] >= rsiOverbought or rsi[1] >= rsiOverbought or rsi[2] >= rsiOverbought or rsi[3] >= rsiOverbought
+
+// Regular Divergence Conditions
+bullishDivergenceCondition = rsi[0] > rsi[1] and rsi[1] < rsi[2]
+bearishDivergenceCondition = rsi[0] < rsi[1] and rsi[1] > rsi[2]
+
+// Entry Conditions
+longEntryCondition = ccimomCrossUp and oversoldAgo and (not useDivergence or bullishDivergenceCondition)
+shortEntryCondition = ccimomCrossDown and overboughtAgo and (not useDivergence or bearishDivergenceCondition)
+
+
+// Mean Reversion Indicator
+meanReversion = plotMeanReversion ? ta.ema(close, emaPeriod) : na
+stdDev = plotMeanReversion ? ta.stdev(close, emaPeriod) : na
+upperBand2 = plotMeanReversion ? meanReversion + stdDev * bandMultiplier : na
+lowerBand2 = plotMeanReversion ? meanReversion - stdDev * bandMultiplier : na
+
+// Track the number of candles since entry
+var int lastentry = 4
+var int lastshort = 4
+
+if ((longEntryCondition or isBuySignal) and bar_index-lastentry>=4)   // if there is 5 bars after last entry
+    // strategy.close("FR", when = bar_index%3==0)   //close at bars which %3 == 0
+    strategy.entry("EN", strategy.long)
+    strategy.exit("Exit Long", from_entry="EN", stop=low * 0.92)//0.94 for daily
+
+    lastentry := bar_index   //store bar_index 
+if (slowALMA>close and strategy.opentrades.profit(strategy.opentrades - 1) > 25)  //85% trades profits security */
+    strategy.close("EN")
+if (isSellSignal and bar_index-lastshort>=4)
+    // strategy.entry("FR", strategy.short)
+    strategy.close("EN", when = bar_index%24==0)   //close at bars which %3 == 0
+    lastshort := bar_index   //store bar_index 
+if shortEntryCondition
+    // strategy.entry("FR", strategy.short) 
+    strategy.close("EN", when = bar_index%24==0)   //close at bars which %3 == 0 for Daily and %24 for 30min
+// Plotting
+plotshape(longEntryCondition, title='BUY', style=shape.triangleup, text='B', location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+plotshape(shortEntryCondition, title='SELL', style=shape.triangledown, text='S', location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+
+plot(upperBand2, title='Upper Band', color=color.new(color.fuchsia, 0), linewidth=1)
+plot(meanReversion, title='Mean', color=color.new(color.gray, 0), linewidth=1)
+plot(lowerBand2, title='Lower Band', color=color.new(color.blue, 0), linewidth=1)
+
+// Entry signal alerts
+alertcondition(longEntryCondition, title='BUY Signal', message='Buy Entry Signal')
+alertcondition(shortEntryCondition, title='SELL Signal', message='Sell Entry Signal')
+alertcondition(longEntryCondition or shortEntryCondition, title='BUY or SELL Signal', message='Entry Signal')
+// Entry and exit logic
+// if isBuySignal or longEntryCondition
+//     strategy.close("Short")
+//     strategy.entry("Buy", strategy.long)
+// if isSellSignal
+//     strategy.close("Buy")
+//     strategy.entry("Short", strategy.short)
+// if shortEntryCondition
+//     strategy.close("Buy")
+
+clGR   = 'Calculation Settings'
+
+vdCT   = 'This indicator uses two different intrabar analysis methods for the ​volume delta calculation:\n' + 
+          ' - buying/selling pressure of the intrabar (default), or\n - polarity of the intrabar\n\n' +
+          'Note : The most precise calculation method uses tick data but requires huge amounts of data on historical bars, ' + 
+          'which usually limits the historical depth of charts'
+vdT1   = 'Intrabar Buying/Selling Pressure' 
+vdT2   = 'Intrabar Polarity' 
+vdCM   = input.string(vdT1, 'Calculation Method', options = [vdT1, vdT2], group = clGR, tooltip = vdCT)
+
+tfTP   = 'The indicator Precision is set by the input of the Lower Timeframe Precision. ' + 
+          'If the Lower Timeframe Precision is set to AUTO, then the Lower Timeframe is determined by the following algorithm:\n\n' +
+          ' - Chart Timeframe,  Lower Timeframe\n'  + 
+          '       <= 1 min                1 Sec\n'  + 
+          '       <= 2 min                5 Sec\n'  + 
+          '       <= 3 min                10 Sec\n' + 
+          '       <= 5 min                15 Sec\n' + 
+          '       <= 15 min              30 Sec\n'  + 
+          '       <= 1 hour               1 min\n'  + 
+          '       <= 2 hour               3 min\n'  + 
+          '       <= 4 hour               5 min\n'  + 
+          '       <= 1 day                15 min\n' + 
+          '       <= 1 week              1 hour\n'  + 
+          '       >   1 week              1 day'
+vdLT   = input.string('Auto', 'Lower Timeframe Precision', 
+          options=['Auto', '1 Sec', '5 Sec', '10 Sec', '15 Sec', '30 Sec', '1 Min', '3 Min', '5 Min', '15 Min', '30 Min', '1 Hour', '4 Hour', '1 Day'], group = clGR, tooltip = tfTP)
+
+prGR   = 'Presentation Settings'
+
+vdTT   = 'Volume Delta is the difference between buying and selling pressure. ' + 
+          'Theoretically, Volume Delta is calculated by taking the difference of the volume that traded at the ask price and the volume that traded at the bid price.\n' + 
+          'This indicator uses intrabar analysis to achieve the most approximate calculation of the ​volume delta'
+vlT1   = 'Volume Delta (Unipolarity)'
+vlT2   = 'Volume Delta (Buy/Sell Polarity)'
+vlT3   = 'Volume Delta + Regular Volume (Overlapping)'
+vlT4   = 'Volume Delta + Regular Volume (Non-Overlapping)'
+vdHG   = input.string(vlT3, 'Volume Delta', options = [vlT1, vlT2, vlT3, vlT4, 'None'], group = prGR, tooltip = vdTT)
+
+cvdTT  = 'Cumulative Volume Delta (CVD) takes the delta values for every bar and adds them together'
+cvdT1  = 'Line (Overlapping Price Bars)'
+cvdT2  = 'Line (Above Price Bars)'
+cvdT3  = 'Area (Above Price Bars)'
+cvdT4  = 'Baseline (Above Price Bars)'
+cvdT5  = 'Candles (Overlapping Price Bars)'
+cvdSH  = input.string(cvdT4, 'Cumulative Volume Delta', options = [cvdT1, cvdT5, cvdT2, cvdT3, cvdT4, 'None'], group = prGR, tooltip = cvdTT)
+
+dvTT   = 'Divergences occur when the polarity of ​volume delta does not match the polarity of the chart bar'
+vdDV   = input.bool(false, 'Volume Delta/Price Bar Divergences', inline='V7', group = prGR, tooltip = dvTT)
+vdCL   = input.color(color.new(#ff9800, 3), '', inline='V7', group = prGR)
+
+nvTT   = 'Displays numerical values of the Volume Delta\n\n' +
+         ' - green above the bar for positive delta\n' +
+         ' - red below the bar for negative delta\n' +
+         ' - orange when the polarity of the volume delete does not match the polarity of the bar'
+vdNV   = input.bool(false, 'Volume Delta Numerical Values', inline='V73', group = prGR, tooltip = nvTT)
+vdLS  = input.string('Tiny', "", options=['Auto', 'Tiny', 'Small', 'Normal'], inline = 'V73', group = prGR)
+
+otGR   = 'Other Features'
+
+vlTT   = 'Toggles the visibility of the average volume over a selected period of time\n\nNote: Applicable when Regular Volume Histogram display is enabled'
+vlMA   = input.bool(true, 'Volume MA', inline='V3', group = otGR, tooltip = vlTT)
+vlLN   = input.int(13, '', inline='V3', minval = 1, group = otGR)
+vlMC   = input.color(color.new(#ff9800, 43), '', inline='V3', group = otGR)
+
+sigTT  = 'Toggles the visibility of the Smoothing Line, calculated by applying an exponentially weighted moving average over the Cumulative Volume Delta\n\n' +
+         'Note: Applicable when Cumulative Volume Delta display is enabled'
+sigSH  = input.bool(true, 'CVD Smoothing', inline='SMT1', group = otGR, tooltip = sigTT) 
+sigML  = input.int(7 , "",  minval = 1, inline='SMT1', group = otGR)
+sigC   = input.color(color.new(#FF6D00, 33), '', inline='SMT1', group = otGR)
+
+vdGR   = 'Volume Delta, Others'
+
+vdUC   = input.color(color.new(#26a69a, 33), 'Volume Delta : Positive' , inline='V1', group = vdGR, tooltip = 'Volume Delta color customization options')
+vdDC   = input.color(color.new(#ef5350, 33), 'Negative', inline='V1', group = vdGR)
+vlUC   = input.color(color.new(#9598a1, 53), 'Volume Histogram : Growing', inline='V2', group = vdGR, tooltip = 'Volume Histogram color customization options')
+vlDC   = input.color(color.new(#9598a1, 83), 'Falling', inline='V2', group = vdGR)
+
+lnTT   = 'Display Length is the length of the visual objects presented with this indicator. Possible values [5-500], where max of 500 length will be visualized ' + 
+         'only if a single line and/or a single histogram enabled, second line or histogram will reduce lenght by half\n\n' +
+         'Note: When an indicator\'s output is in a different scale from the price scale then the general approach is to present them in a separate pane. ' +
+         'Unlike the general approach, this script presents the visuals on top of the price chart, which requires additional calculations ' + 
+         'to re-scale the indicator\'s output to fit on top of the price chart. Besides re-scale calculations, the methods used to plot them ' +
+         'also differ which brings us to the limitation of PineScript (number of line, box, label limits) and hence the need to limit the Display Length of the visuals'
+vdLN   = input.int(100, 'Display Length', minval = 5, step = 5, maxval = 500, group = vdGR, tooltip = lnTT)
+vdLN  := last_bar_index < vdLN ? last_bar_index : vdLN
+vdPL   = input.string('Bottom', 'Placement', options = ['Top', 'Bottom'], group = vdGR, tooltip = 'Volume Delta placment on the ptice chart.\n\nNote: if Volume Delta input option is selected as \'Volume Delta + Regular Volume (Non-Overlapping)\', then Regular Volume will be ploted in the opposite direction')
+vdHT   = input.float(.7, 'Volume Delta Height' , minval = .1, maxval = 7, step = .1, group = vdGR, tooltip = 'Volume Delta Height - Possible values [0.1-7]')
+vlHT   = input.float(.7, 'Volume Histogram Height' , minval = .1, maxval = 7, step = .1, group = vdGR, tooltip = 'Volume Histogram Height - Possible values [0.1-7]')
+vvVO   = input.float(.07, 'Vertical Offset' , minval = -.7, maxval = .7, step = .01, group = vdGR, tooltip = 'Volume Delta and Volume Histogram Vertical Offset - Possible values [-0.7-0.7]')
+
+cvdGR  = "Cumulative Volume Delta, Others"
+
+cvdW   = input.int(2 , "CVD Line, Width", minval = 1, maxval = 5, inline='CVD', group = cvdGR, tooltip = 'Cumulative Volume Delta Line Width and Color')
+cvdC   = input.color(color.new(#2962FF, 33), 'Color', inline='CVD', group = cvdGR)
+cvdBU  = input.color(color.new(#2962FF, 89), 'CVD Area/Baseline, Gradient Coloring', inline='CVD1', group = cvdGR, tooltip = 'Cumulative Volume Delta Area and Baseline Gradient Coloring')
+cvdBD  = input.color(color.new(#FF6D00, 89), '', inline='CVD1', group = cvdGR)
+cvdCU  = input.color(color.new(#26a69a, 13), 'CVD Candles Color, Positive' , inline='CV1', group = cvdGR, tooltip = 'Cumulative Volume Delta Candles Coloring')
+cvdCD  = input.color(color.new(#ef5350, 13), 'Negative', inline='CV1', group = cvdGR)
+sigBG  = input.bool(true, "CVD/Smoothing Background", inline = 'BG', group = cvdGR, tooltip = 'Highlights and adjusts the transparency of the area between the Cumulative Volume Delta Line and it\'s Smoothing Line')
+sigBT  = input.int(89 , "", inline = 'BG',  minval = 0, maxval = 100, group = cvdGR)
+
+//-----------------------------------------------------------------------------}
+// User Defined Types
+//-----------------------------------------------------------------------------{
+
+// @type        bar properties with their values 
+//
+// @field o     (float) open price of the bar
+// @field h     (float) high price of the bar
+// @field l     (float) low price of the bar
+// @field c     (float) close price of the bar
+// @field v     (float) volume of the bar
+// @field i     (int) index of the bar
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    float v = volume
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+nzV   = nz(b.v)
+
+var aCVD = array.new_line()
+var aVD  = array.new_box()
+var aBG  = array.new_linefill()
+var aDV  = array.new_label()
+
+mInMS = 60 * 1000
+
+//-----------------------------------------------------------------------------}
+// Functions/Methods
+//-----------------------------------------------------------------------------{
+
+// @function     Calculates the volume of up and down bars
+//
+// @returns      [float, float] the volume of up bars, and the volume of down bars
+
+f_calcV() =>
+    uV = 0., dV = 0.
+    switch
+        vdCM == vdT1 and (b.c - b.l) > (b.h - b.c) => uV += nzV
+        vdCM == vdT1 and (b.c - b.l) < (b.h - b.c) => dV -= nzV
+        vdCM == vdT2 and b.c > b.o => uV += nzV
+        vdCM == vdT2 and b.c < b.o => dV -= nzV
+        b.c > nz(b.c[1]) => uV += nzV
+        b.c < nz(b.c[1]) => dV -= nzV
+        nz(uV[1]) > 0 => uV += nzV
+        nz(dV[1]) < 0 => dV -= nzV
+    
+    [uV, dV]
+
+// @function     Calculates the Lower Timeframe based on the Input or Chart Resolution
+//
+// @returns      [string] Lower Timeframe string
+
+f_calcLTF(_tf) =>
+    int tfInMs = timeframe.in_seconds() * 1000
+    switch _tf
+        'Auto'   =>  tfInMs <=        1 * mInMS  ? '1S'  : 
+                     tfInMs <=        2 * mInMS  ? '5S' : 
+                     tfInMs <=        3 * mInMS  ? '10S' : 
+                     tfInMs <=        5 * mInMS  ? '15S' : 
+                     tfInMs <=       15 * mInMS  ? '30S' : 
+                     tfInMs <=       60 * mInMS  ? '1' : 
+                     tfInMs <=      120 * mInMS  ? '3' : 
+                     tfInMs <=      240 * mInMS  ? '5' : 
+                     tfInMs <=     1440 * mInMS  ? '15' : 
+                     tfInMs <= 7 * 1440 * mInMS  ? '60' : 'D'
+        '1 Sec'  => '1S'
+        '5 Sec'  => '5S'
+        '10 Sec' => '10S'
+        '15 Sec' => '15S'
+        '30 Sec' => '30S'
+        '1 Min'  => '1'
+        '3 Min'  => '3'
+        '5 Min'  => '5'
+        '15 Min' => '15'
+        '30 Min' => '30'
+        '1 Hour' => '60'
+        '4 Hour' => '240'
+        '1 Day'  => '1D'
+
+//-----------------------------------------------------------------------------}
+// Calculations
+//-----------------------------------------------------------------------------{
+
+[uV, dV] = request.security_lower_tf(syminfo.tickerid, f_calcLTF(vdLT), f_calcV())
+
+tuV  = uV.sum()
+tdV  = dV.sum()
+vd   = tuV + tdV
+cvd  = ta.cum(vd)
+sig  = sigSH ? ta.rma(cvd, sigML) : na
+
+pHST = ta.highest(b.h, vdLN)
+pLST = ta.lowest (b.l, vdLN)
+pCHG = (pHST - pLST) / pHST
+
+oHST = ta.highest(cvd, vdLN)
+oLST = ta.lowest (cvd, vdLN)
+
+vdHS = ta.highest(vd, vdLN)
+vHST = ta.highest(nzV, vdLN)
+vCHG = nzV/ta.sma(nzV, vlLN)
+
+bull = b.c > b.o
+vlPL = vdHG == vlT3 ? vdPL : vdPL == 'Top' ? 'Bottom' : 'Top'
+vdHT := vdHG == vlT3 or vdHG == vlT4 ? vdHT + 1.5 : vdHT
+
+nvS = switch vdLS
+    'Auto'   => size.auto
+    'Tiny'   => size.tiny
+    'Small'  => size.small
+    'Normal' => size.normal
+
+if barstate.islast and nzV
+    if aCVD.size() > 0
+        for i = 1 to aCVD.size()
+            line.delete(aCVD.shift())
+
+    if aVD.size() > 0
+        for i = 1 to aVD.size()
+            box.delete(aVD.shift())
+
+    if aBG.size() > 0
+        for i = 1 to aBG.size()
+            linefill.delete(aBG.shift())
+
+    if aDV.size() > 0
+        for i = 1 to aDV.size()
+            label.delete(aDV.shift())
+    
+    for bI = 0 to vdLN - 1
+        if array.size(aCVD) < 500
+            if cvdSH != 'None' and cvdSH != cvdT5
+                aCVD.push(line.new(b.i[bI]    , (cvdSH  == cvdT1 ? pLST : cvdSH == cvdT3 ? pHST * (1 + pCHG * .1) : pHST) + (cvd[bI]     -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                   b.i[bI + 1], (cvdSH  == cvdT1 ? pLST : cvdSH == cvdT3 ? pHST * (1 + pCHG * .1) : pHST) + (cvd[bI + 1] -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                   xloc.bar_index, extend.none, cvdSH == cvdT4 ? color.from_gradient(pHST + (cvd[bI] -  oLST) * (pHST - pLST) / (oHST - oLST), pHST, pHST + (pHST - pLST), sigC, cvdC) : cvdC, line.style_solid, cvdW))
+
+            if cvdSH == cvdT3 or cvdSH == cvdT4
+                aCVD.push(line.new(b.i[bI], pHST * (1 + pCHG * (cvdSH == cvdT4 ? .5 : .1)), b.i[bI + 1], pHST * (1 + pCHG * (cvdSH == cvdT4 ? .5 : .1)), xloc.bar_index, extend.none, color(na), line.style_solid, cvdW))
+                aBG.push(linefill.new(aCVD.get(vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 and sigSH ? 4 * bI : vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 or sigSH ? 3 * bI : 2 * bI), aCVD.get((vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 and sigSH ? 4 * bI : vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 or sigSH ? 3 * bI : 2 * bI) + 1), color.from_gradient(pHST + (cvd[bI] -  oLST) * (pHST - pLST) / (oHST - oLST), pHST, pHST + (pHST - pLST), cvdBD, cvdBU) ))
+
+            if sigSH and cvdSH != 'None'
+                aCVD.push(line.new(b.i[bI]    , (cvdSH  == cvdT1 or cvdSH == cvdT5 ? pLST : cvdSH == cvdT3 ? pHST * (1 + pCHG * .1) : pHST) + (sig[bI]     -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                   b.i[bI + 1], (cvdSH  == cvdT1 or cvdSH == cvdT5 ? pLST : cvdSH == cvdT3 ? pHST * (1 + pCHG * .1) : pHST) + (sig[bI + 1] -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                   xloc.bar_index, extend.none, sigC, line.style_solid, 1))
+
+            if sigBG and cvdSH != 'None' and sigSH and cvdSH != cvdT3 and cvdSH != cvdT4 and cvdSH != cvdT5
+                aBG.push(linefill.new(aCVD.get(vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 ? 3 * bI : 2 * bI), aCVD.get((vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4 ? 3 * bI : 2 * bI) + 1), cvd[bI] > sig[bI] ? color.new(cvdC, sigBT) : color.new(sigC, sigBT)))
+
+            if vlMA and vdHG == vlT3 or vlMA and vdHG == vlT4
+                aCVD.push(line.new(b.i[bI]    , (vlPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST  * (1 - pCHG * vvVO)) * (1 + (vlPL == 'Top' ? 1 : -1) * nzV[bI] / vHST * pCHG * vlHT / vCHG[bI]), 
+                                   b.i[bI + 1], (vlPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST  * (1 - pCHG * vvVO)) * (1 + (vlPL == 'Top' ? 1 : -1) * nzV[bI + 1] / vHST * pCHG * vlHT / vCHG[bI + 1]), 
+                                   xloc.bar_index, extend.none, vlMC, line.style_solid, 1))
+
+        if array.size(aVD) < 500
+            if vdHG == vlT3 or vdHG == vlT4
+                aVD.push(box.new (b.i[bI],  vlPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST * (1 - pCHG * vvVO), 
+                                  b.i[bI], (vlPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST * (1 - pCHG * vvVO)) * (1 + (vlPL == 'Top' ? 1 : -1)  * nzV[bI] / vHST * pCHG * vlHT), 
+                                  bull[bI] ? vlUC : vlDC, 2, bgcolor = color(na)))
+
+            if vdHG != vlT2 and vdHG != 'None'
+                aVD.push(box.new (b.i[bI],  vdPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST * (1 - pCHG * vvVO), 
+                                  b.i[bI], (vdPL == 'Top' ? pHST * (1 + pCHG * vvVO) : pLST * (1 - pCHG * vvVO)) * (1 + (vdPL == 'Top' ? 1 : -1) * math.abs(vd[bI]) / (vdHG == vlT3 ? vHST : vdHS) * pCHG / 2 * vdHT), 
+                                  vd[bI] > 0 ? vdUC : vdDC, 2, bgcolor = color(na)))
+
+            if vdHG == vlT2
+                aVD.push(box.new (b.i[bI],  vdPL == 'Top' ? pHST * (1 + pCHG * vvVO) + ((oHST - oLST) / 2) * (pHST - pLST) / (oHST - oLST) : pLST * (1 - pCHG * vvVO) - ((oHST - oLST) / 2) * (pHST - pLST) / (oHST - oLST), 
+                                  b.i[bI], (vdPL == 'Top' ? pHST * (1 + pCHG * vvVO) + ((oHST - oLST) / 2) * (pHST - pLST) / (oHST - oLST) : pLST * (1 - pCHG * vvVO) - ((oHST - oLST) / 2) * (pHST - pLST) / (oHST - oLST)) * (1 + vd[bI] / (vdHG == vlT3 ? vHST : vdHS) * pCHG / 2 * vdHT), 
+                                  vd[bI] > 0 ? vdUC : vdDC, 2, bgcolor = color(na)))
+
+            if cvdSH == cvdT5
+                aVD.push(box.new (b.i[bI], pLST + (cvd[bI] -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                  b.i[bI], pLST + (cvd[bI + 1] -  oLST) * (pHST - pLST) / (oHST - oLST), 
+                                  vd[bI] > 0 ? cvdCU : cvdCD, 2, bgcolor = color(na)))
+        
+            vdS =  'Total Volume : '   + str.tostring(nzV[bI] , format.volume) +
+                 '\nBuy Volume   : '   + str.tostring(tuV[bI] , format.volume) +
+                 '\nSell Volume    : ' + str.tostring(-tdV[bI], format.volume) +
+                 '\nVolume Delta : '   + str.tostring(vd[bI]  , format.volume)
+
+            if vdNV
+                if math.sign(b.c[bI] - b.o[bI]) != math.sign(vd[bI]) 
+                    aDV.push(label.new(b.i[bI], bull[bI] ? b.h[bI] : b.l[bI], str.tostring(vd[bI], format.volume), color = color(na), style = bull[bI] ? label.style_label_down : label.style_label_up, size = nvS, textcolor = color.orange, tooltip = 'Divergence\n   the polarity of ​volume delta does not match the polarity of the chart bar\n\n' + vdS)) 
+                else
+                    aDV.push(label.new(b.i[bI], bull[bI] ? b.h[bI] : b.l[bI], str.tostring(vd[bI], format.volume), color = color(na), style = bull[bI] ? label.style_label_down : label.style_label_up, size = nvS, textcolor = bull[bI] ? color.green : color.red, tooltip = vdS)) 
+
+            if vdDV and math.sign(b.c[bI] - b.o[bI]) != math.sign(vd[bI])
+                aDV.push(label.new(b.i[bI], b.h[bI] * (1 + pCHG * .04), '', color = vdCL, style = label.style_label_down, size = size.auto, tooltip = 'Divergence\n   the polarity of ​volume delta does not match the polarity of the chart bar\n\n' + vdS)) 
+
+//-----------------------------------------------------------------------------}
